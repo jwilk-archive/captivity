@@ -1,0 +1,124 @@
+#!/usr/bin/python3
+
+import argparse
+import errno
+import logging
+import os
+import shutil
+import subprocess as ipc
+import sys
+import tempfile
+import time
+
+import yaml
+
+control_template = '''\
+Package: {package}
+Version: {version}
+Depends: {depends}
+Architecture: all
+Description: captivity meta-package
+Maintainer: captivity@captivity.jwilk.net
+'''
+
+version_format = '0+%Y%m%d.%H%M%S'
+
+extra_option_names = {
+    'prefix',
+}
+
+def get_default_version(version_format=version_format):
+    return time.strftime(version_format, time.gmtime())
+
+def main():
+    logging.basicConfig(format='captivity: %(message)s')
+    if os.getuid() != 0:
+        logging.error('you must run this problem with (fake)root privileges')
+        sys.exit(1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('config', nargs='+',
+        metavar='<config>', help='config file (in YAML format)'
+    )
+    parser.add_argument('-d', '--destdir', required=True,
+        metavar='<destdir>'
+    )
+    options = parser.parse_args()
+    options.prefix = ''
+    files = options.config
+    del options.config
+    options.version = get_default_version()
+    try:
+        os.makedirs(options.destdir)
+    except EnvironmentError as ex:
+        if ex.errno != errno.EEXIST:
+            raise
+    for file in files:
+        with open(file, 'rb') as file:
+            process_file(file, options=options)
+    build_indices(options)
+
+
+def process_file(file, *, options):
+    data = yaml.load(file)
+    try:
+        extra_options = data['OPTIONS']
+    except LookupError:
+        extra_options = {}
+    else:
+        del data['OPTIONS']
+    for key, value in extra_options.items():
+        if key not in extra_option_names:
+            logging.warning('unknown option: {0!r}'.format(key))
+        else:
+            setattr(options, key, value)
+    return build_debs(data, prefix=options.prefix, options=options)
+
+def build_debs(data, *, prefix, options):
+    if prefix[-1:].isalnum():
+        infix = '-'
+    else:
+        infix = ''
+    if isinstance(data, dict):
+        for key, value in data.items():
+            new_prefix = prefix + infix + key
+            build_debs(value, prefix=new_prefix, options=options)
+    else:
+        build_deb(prefix, depends=data, options=options)
+
+def build_deb(package, *, depends=[], options):
+    debdir = tempfile.mkdtemp(prefix='captivity.')
+    try:
+        os.chmod(debdir, 0o755)
+        p_DEBIAN = os.path.join(debdir, 'DEBIAN')
+        os.mkdir(p_DEBIAN)
+        os.chmod(p_DEBIAN, 0o755)
+        p_control = os.path.join(p_DEBIAN, 'control')
+        with open(p_control, 'w') as file:
+            print(control_template.format(
+                package=package,
+                version=options.version,
+                depends=', '.join(map(str, depends)),
+                ), end='', file=file
+            )
+        os.chmod(p_control, 0o644)
+        child = ipc.Popen(['dpkg-deb', '-b', debdir, options.destdir])
+        if child.wait() != 0:
+            raise IOError
+    finally:
+        shutil.rmtree(debdir)
+
+def build_indices(options):
+    p_packages = os.path.join(options.destdir, 'Packages.gz')
+    def chdir_destdir():
+        os.chdir(options.destdir)
+    with open(p_packages, 'wb') as packages:
+        ipc.check_call('dpkg-scanpackages . | gzip -9c',
+            shell=True,
+            preexec_fn=chdir_destdir,
+            stdout=packages
+        )
+
+if __name__ == '__main__':
+    main()
+
+# vim:ts=4 sw=4 et
