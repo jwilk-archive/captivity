@@ -122,9 +122,7 @@ def build_deb(package, *, depends=[], options):
                 ), end='', file=file
             )
         os.chmod(p_control, 0o644)
-        child = ipc.Popen(['dpkg-deb', '-b', debdir, options.destdir])
-        if child.wait() != 0:
-            raise IOError
+        child = ipc.check_call(['dpkg-deb', '-b', debdir, options.destdir])
     finally:
         shutil.rmtree(debdir)
 
