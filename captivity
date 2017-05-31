@@ -80,7 +80,7 @@ def main():
 
 
 def process_file(file, *, options):
-    data = yaml.load(file)
+    data = yaml.safe_load(file)
     try:
         extra_options = data['OPTIONS']
     except LookupError:
